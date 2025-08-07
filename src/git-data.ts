@@ -24,6 +24,7 @@ export class GitData {
         host: "gitlab.com",
         group: "fallback.group",
         project: "fallback.project",
+        user: "git",
     };
 
     public readonly commit = {
@@ -90,14 +91,30 @@ export class GitData {
     private async initRemoteData (cwd: string, writeStreams: WriteStreams): Promise<void> {
         try {
             let gitRemoteMatch;
-            let gitRemote;
+            let gitRemote = 'origin';
+
             try {
+                const remotes = await Utils.spawn(["git", "remote"], cwd);
+                const pickremote = (remoteKey: string, curValue: string, ndx: number): string => {
+                    if (remoteKey !== 'gcl-origin') {
+                        if ( curValue === 'gcl-origin') {
+                            let remoteKey = curValue;
+                        } else if ( curValue === 'origin' ) {
+                            let remoteKey = curValue;
+                        } else if ( ndx === 0 ) {
+                            let remoteKey = curValue;
+                        }
+                        return remoteKey;
+                    }
+                };
+
+                let remoteKey = remotes.stdout.split(" ").reduce(pickremote );
+
                 // NOTE: For power user that wishes to customize the remote url
-                const res = await Utils.spawn(["git", "remote", "get-url", "gcl-origin"], cwd);
+                const res = await Utils.spawn(["git", "remote", "get-url", remoteKey], cwd);
                 gitRemote = res.stdout;
             } catch {
-                const res = await Utils.spawn(["git", "remote", "get-url", "origin"], cwd);
-                gitRemote = res.stdout;
+                console.error(e);
             }
 
             // To simplify the regex. Stripping the trailing `/` or `.git` since they're both optional.
@@ -121,7 +138,7 @@ export class GitData {
                 this.remote.schema = gitRemoteMatch.groups.schema as GitSchema;
                 this.remote.port = port;
             } else if (normalizedGitRemote.startsWith("ssh://")) {
-                gitRemoteMatch = /(?<schema>ssh):\/\/(\w+)@(?<host>[^/:]+):?(?<port>\d+)?\/(?<group>\S+)\/(?<project>\S+)/.exec(normalizedGitRemote); // regexr.com/7vjq4
+                gitRemoteMatch = /(?<schema>ssh):\/\/(?<username>\w+)@(?<host>[^/:]+):?(?<port>\d+)?\/(?<group>\S+)\/(?<project>\S+)/.exec(normalizedGitRemote); // regexr.com/7vjq4
                 assert(gitRemoteMatch?.groups != null, "git remote get-url origin didn't provide valid matches");
 
                 this.remote.host = gitRemoteMatch.groups.host;
@@ -129,6 +146,7 @@ export class GitData {
                 this.remote.project = gitRemoteMatch.groups.project;
                 this.remote.schema = gitRemoteMatch.groups.schema as GitSchema;
                 this.remote.port = gitRemoteMatch.groups.port ?? "22";
+                this.remote.user = gitRemoteMatch.groups.username ?? "git";
             } else {
                 gitRemoteMatch = /(?<username>\S+)@(?<host>[^:]+):(?<group>\S+)\/(?<project>\S+)/.exec(normalizedGitRemote); // regexr.com/7vjoq
                 assert(gitRemoteMatch?.groups != null, "git remote get-url origin didn't provide valid matches");
@@ -140,6 +158,7 @@ export class GitData {
                 this.remote.project = gitRemoteMatch.groups.project;
                 this.remote.schema = "git";
                 this.remote.port = port;
+                this.remote.user = gitRemoteMatch.groups.username ?? "git";
             }
         } catch (e: any) {
             if (e instanceof AssertionError) {
