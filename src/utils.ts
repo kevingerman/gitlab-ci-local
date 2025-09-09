@@ -1,19 +1,18 @@
 import "./global.js";
 import {RE2JS} from "re2js";
-import chalk from "chalk-template";
-import {Job, JobRule, Need, Service} from "./job.js";
-import {needsComplex} from "./data-expander.js";
+import chalk from "chalk";
+import {Job, JobRule} from "./job.js";
 import fs from "fs-extra";
 import checksum from "checksum";
 import base64url from "base64url";
-import execa, {ExecaError} from "execa";
-import assert from "node:assert";
+import execa from "execa";
+import assert from "assert";
 import {CICDVariable} from "./variables-from-files.js";
-import {GitData} from "./git-data.js";
-import {globbySync} from "globby";
+import {GitData, GitSchema} from "./git-data.js";
+import globby from "globby";
 import micromatch from "micromatch";
-import {AxiosRequestConfig} from "axios";
-import path from "node:path";
+import axios, {AxiosRequestConfig} from "axios";
+import path from "path";
 import {Argv} from "./argv.js";
 
 type RuleResultOpt = {
@@ -56,7 +55,7 @@ export class Utils {
     }
 
     static safeBashString (s: string) {
-        return `'${s.replaceAll("'", "'\"'\"'")}'`;
+        return `'${s.replace(/'/g, "'\"'\"'")}'`; // replaces `'` with `'"'"'`
     }
 
     static forEachRealJob (gitlabData: any, callback: (jobName: string, jobData: any) => void) {
@@ -92,8 +91,8 @@ export class Utils {
         const matches = Array.from(content.matchAllRE2JS(regex));
         if (matches.length === 0) return "0";
 
-        const lastMatch = matches.at(-1)!;
-        const digits = /\d+(?:\.\d+)?/.exec(lastMatch[1] ?? lastMatch[0] ?? "");
+        const lastMatch = matches[matches.length - 1];
+        const digits = /\d+(?:\.\d+)?/.exec(lastMatch[1] ?? lastMatch[0]);
         if (!digits) return "0";
         return digits[0] ?? "0";
     }
@@ -111,15 +110,16 @@ export class Utils {
             return text;
         }
 
-        return text.replaceAll(
+        return text.replace(
             /(\$\$)|\$\{([a-zA-Z_]\w*)}|\$([a-zA-Z_]\w*)/g, // https://regexr.com/7s4ka
             (_match, escape, var1, var2) => {
-                if (escape !== undefined) {
+                if (typeof escape !== "undefined") {
                     return expandWith.unescape;
+                } else {
+                    const name = var1 || var2;
+                    assert(name, "unexpected unset capture group");
+                    return `${expandWith.variable(name)}`;
                 }
-                const name = var1 || var2;
-                assert(name, "unexpected unset capture group");
-                return `${expandWith.variable(name)}`;
             },
         );
     }
@@ -188,14 +188,13 @@ export class Utils {
         return envMatchedVariables;
     }
 
-    static getRulesResult (opt: RuleResultOpt, gitData: GitData, jobWhen: string = "on_success", jobAllowFailure: boolean | {exit_codes: number | number[]} | undefined = undefined): {when: string; allowFailure: boolean | {exit_codes: number | number[]}; variables?: {[name: string]: string}; needs?: Need[]} {
+    static getRulesResult (opt: RuleResultOpt, gitData: GitData, jobWhen: string = "on_success", jobAllowFailure: boolean | {exit_codes: number | number[]} = false): {when: string; allowFailure: boolean | {exit_codes: number | number[]}; variables?: {[name: string]: string}} {
         let when = "never";
         const {evaluateRuleChanges} = opt.argv;
 
         // optional manual jobs allowFailure defaults to true https://docs.gitlab.com/ee/ci/jobs/job_control.html#types-of-manual-jobs
-        let allowFailure: boolean | {exit_codes: number | number[]} = jobAllowFailure ?? jobWhen === "manual";
+        let allowFailure = jobWhen === "manual" ? true : jobAllowFailure;
         let ruleVariable: {[name: string]: string} | undefined;
-        let ruleNeeds: Need[] | undefined;
 
         for (const rule of opt.rules) {
             if (!Utils.evaluateRuleIf(rule.if, opt.variables)) continue;
@@ -205,12 +204,11 @@ export class Utils {
             when = rule.when ? rule.when : jobWhen;
             allowFailure = rule.allow_failure ?? allowFailure;
             ruleVariable = rule.variables;
-            ruleNeeds = rule.needs?.map((n: any) => needsComplex(n));
 
             break; // Early return, will not evaluate the remaining rules
         }
 
-        return {when, allowFailure, variables: ruleVariable, needs: ruleNeeds};
+        return {when, allowFailure, variables: ruleVariable};
     }
 
     static evaluateRuleIf (ruleIf: string | undefined, envs: {[key: string]: string}): boolean {
@@ -240,8 +238,8 @@ export class Utils {
 
         // Scenario when RHS is a <regex>
         // https://regexr.com/85sjo
-        const pattern1 = /\s*(?<operator>(?:=~)|(?:!~))\s*\/(?<rhs>.*?[^\\])\/(?<flags>[igmsuy]*)(\s|$|\))/g;
-        evalStr = evalStr.replaceAll(pattern1, (_, operator, rhs, flags, remainingTokens) => {
+        const pattern1 = /\s*(?<operator>(?:=~)|(?:!~))\s*\/(?<rhs>.*?)\/(?<flags>[igmsuy]*)(\s|$|\))/g;
+        evalStr = evalStr.replace(pattern1, (_, operator, rhs, flags, remainingTokens) => {
             let _operator;
             switch (operator) {
                 case "=~":
@@ -269,7 +267,7 @@ export class Utils {
         // Scenario when RHS is surrounded by single/double-quotes
         // https://regexr.com/85t0g
         const pattern2 = /\s*(?<operator>=~|!~)\s*(["'])(?<rhs>(?:\\.|[^\\])*?)\2/g;
-        evalStr = evalStr.replaceAll(pattern2, (_, operator, __, rhs) => {
+        evalStr = evalStr.replace(pattern2, (_, operator, __, rhs) => {
             let _operator;
             switch (operator) {
                 case "=~":
@@ -296,16 +294,16 @@ export class Utils {
             return `.matchRE2JS(${_rhs}) ${_operator} null`;
         });
 
-        evalStr = evalStr.replaceAll(/null.matchRE2JS\(.+?\)\s*!=\s*null/g, "false");
-        evalStr = evalStr.replaceAll(/null.matchRE2JS\(.+?\)\s*==\s*null/g, "true");
+        evalStr = evalStr.replace(/null.matchRE2JS\(.+?\)\s*!=\s*null/g, "false");
+        evalStr = evalStr.replace(/null.matchRE2JS\(.+?\)\s*==\s*null/g, "true");
 
         evalStr = evalStr.trim();
 
         let res;
         try {
-            (globalThis as any).RE2JS = RE2JS;
-            res = (0, eval)(evalStr); // indirect eval
-            delete (globalThis as any).RE2JS;
+            (global as any).RE2JS = RE2JS; // Assign RE2JS to the global object
+            res = (0, eval)(evalStr); // https://esbuild.github.io/content-types/#direct-eval
+            delete (global as any).RE2JS; // Cleanup
         } catch {
             const assertMsg = [
                 "Error attempting to evaluate the following rules:",
@@ -331,7 +329,7 @@ export class Utils {
             if (pattern == "") {
                 continue;
             }
-            if (globbySync(pattern, {dot: true, cwd}).length > 0) {
+            if (globby.sync(pattern, {dot: true, cwd}).length > 0) {
                 return true;
             }
         }
@@ -356,8 +354,19 @@ export class Utils {
     }
 
     static isSubpath (lhs: string, rhs: string, cwd: string = process.cwd()) {
-        const absLhs = path.isAbsolute(lhs) ? lhs : path.resolve(cwd, lhs);
-        const absRhs = path.isAbsolute(rhs) ? rhs : path.resolve(cwd, rhs);
+        let absLhs = "";
+        if (path.isAbsolute(lhs)) {
+            absLhs = lhs;
+        } else {
+            absLhs = path.resolve(cwd, lhs);
+        }
+
+        let absRhs = "";
+        if (path.isAbsolute(rhs)) {
+            absRhs = rhs;
+        } else {
+            absRhs = path.resolve(cwd, rhs);
+        }
 
         const relative = path.relative(absRhs, absLhs);
         return !relative.startsWith("..");
@@ -393,104 +402,40 @@ export class Utils {
         return Object.getPrototypeOf(v) === Object.prototype;
     }
 
+    static async remoteFileExist (cwd: string, file: string, ref: string, domain: string, projectPath: string, protocol: GitSchema, port: string, gituser: string) {
+        switch (protocol) {
+            case "ssh":
+            case "git":
+                try {
+                    await Utils.spawn(`git archive --remote=ssh://${gituser}@${domain}:${port}/${projectPath}.git ${ref} ${file}`.split(" "), cwd);
+                    return true;
+                } catch (e: any) {
+                    if (!e.stderr.includes(`remote: fatal: pathspec '${file}' did not match any files`)) throw new Error(e);
+                    return false;
+                }
+
+            case "http":
+            case "https": {
+                try {
+                    const axiosConfig: AxiosRequestConfig = Utils.getAxiosProxyConfig();
+                    const {status} = await axios.get(
+                        `${protocol}://${domain}:${port}/${projectPath}/-/raw/${ref}/${file}`,
+                        axiosConfig,
+                    );
+                    return (status === 200);
+                } catch {
+                    return false;
+                }
+            }
+            default: {
+                Utils.switchStatementExhaustiveCheck(protocol);
+            }
+        }
+    }
+
     static switchStatementExhaustiveCheck (param: never): never {
         // https://dev.to/babak/exhaustive-type-checking-with-typescript-4l3f
         throw new Error(`Unhandled case ${param}`);
-    }
-
-    static async dockerVolumeFileExists (containerExecutable: string, path: string, volume: string): Promise<boolean> {
-        try {
-            await Utils.spawn([containerExecutable, "run", "--rm", "-v", `${volume}:/mnt/vol`, "alpine", "ls", `/mnt/vol/${path}`]);
-            return true;
-        } catch {
-            return false;
-        }
-    }
-
-    static readonly gclRegistryPrefix: string = "registry.gcl.local";
-    static async startDockerRegistry (argv: Argv): Promise<void> {
-        const gclRegistryCertVol = `${this.gclRegistryPrefix}.certs`;
-        const gclRegistryDataVol = `${this.gclRegistryPrefix}.data`;
-        const gclRegistryNet = `${this.gclRegistryPrefix}.net`;
-
-        // create cert volume
-        try {
-            await Utils.spawn(`${argv.containerExecutable} volume create ${gclRegistryCertVol}`.split(" "));
-        } catch (err) {
-            if (err instanceof Error && !err.message.endsWith("already exists"))
-                throw err;
-        }
-
-        // create self-signed cert/key files for https support
-        if (!await this.dockerVolumeFileExists(argv.containerExecutable, `${this.gclRegistryPrefix}.crt`, gclRegistryCertVol)) {
-            const opensslArgs = [
-                "req", "-newkey", "rsa:4096", "-nodes", "-sha256",
-                "-keyout", `/certs/${this.gclRegistryPrefix}.key`,
-                "-x509", "-days", "365",
-                "-out", `/certs/${this.gclRegistryPrefix}.crt`,
-                "-subj", `/CN=${this.gclRegistryPrefix}`,
-                "-addext", `subjectAltName=DNS:${this.gclRegistryPrefix}`,
-            ];
-            const generateCertsInPlace = [
-                argv.containerExecutable, "run", "--rm", "-v", `${gclRegistryCertVol}:/certs`, "--entrypoint", "sh", "alpine/openssl", "-c",
-                [
-                    "openssl", ...opensslArgs,
-                    "&&", "mkdir", "-p", `/certs/${this.gclRegistryPrefix}`,
-                    "&&", "cp", `/certs/${this.gclRegistryPrefix}.crt`, `/certs/${this.gclRegistryPrefix}/ca.crt`,
-                ].join(" "),
-            ];
-            await Utils.spawn(generateCertsInPlace);
-        }
-
-        // create data volume
-        try {
-            await Utils.spawn([argv.containerExecutable, "volume", "create", gclRegistryDataVol]);
-        } catch (err) {
-            if (err instanceof Error && !err.message.endsWith("already exists"))
-                throw err;
-        }
-
-        // create network
-        try {
-            await Utils.spawn([argv.containerExecutable, "network", "create", gclRegistryNet]);
-        } catch (err) {
-            if (err instanceof Error && !err.message.includes("already exists"))
-                throw err;
-        }
-
-        await Utils.spawn([argv.containerExecutable, "rm", "-f", this.gclRegistryPrefix]);
-        await Utils.spawn([
-            argv.containerExecutable, "run", "-d", "--name", this.gclRegistryPrefix,
-            "--network", gclRegistryNet,
-            "--volume", `${gclRegistryDataVol}:/var/lib/registry`,
-            "--volume", `${gclRegistryCertVol}:/certs:ro`,
-            "-e", "REGISTRY_HTTP_ADDR=0.0.0.0:443",
-            "-e", `REGISTRY_HTTP_TLS_CERTIFICATE=/certs/${this.gclRegistryPrefix}.crt`,
-            "-e", `REGISTRY_HTTP_TLS_KEY=/certs/${this.gclRegistryPrefix}.key`,
-            "registry",
-        ]);
-
-        try {
-            await execa(argv.containerExecutable, [
-                "run", "--rm",
-                "--network", gclRegistryNet,
-                "--entrypoint", "sh",
-                "curlimages/curl",
-                "-c", `until [ "$(curl -s -o /dev/null -k -w "%{http_code}" https://${this.gclRegistryPrefix}:443)" = "200" ]; do sleep 1; done;`,
-            ], {
-                timeout: 4000,
-            });
-        } catch (err) {
-            await this.stopDockerRegistry(argv.containerExecutable);
-            if ((err as ExecaError).timedOut) {
-                throw new Error("local docker registry port check timed out", {cause: err});
-            }
-            throw err;
-        }
-    }
-
-    static async stopDockerRegistry (containerExecutable: string): Promise<void> {
-        await Utils.spawn([containerExecutable, "rm", "-f", this.gclRegistryPrefix]);
     }
 
     static async getTrackedFiles (cwd: string): Promise<string[]> {
@@ -508,46 +453,11 @@ export class Utils {
             return {
                 proxy: {
                     host: proxyUrl.hostname,
-                    port: proxyUrl.port ? Number.parseInt(proxyUrl.port, 10) : 8080,
+                    port: proxyUrl.port ? parseInt(proxyUrl.port, 10) : 8080,
                     protocol: proxyUrl.protocol.replace(":", ""),
                 },
             };
         }
         return {};
-    }
-
-    static normalizeVariables (variable: any) {
-        if (variable === null) {
-            return ""; // variable's values are nullable
-        } else if (Utils.isObject(variable)) {
-            if (variable["expand"] === false) {
-                return String(variable["value"]).replaceAll("$", () => "$$");
-            }
-            return String(variable["value"]);
-        } else {
-            return String(variable);
-        }
-    }
-
-    static getAllServiceAliases (service: Service): Set<string> {
-        const aliases = new Set<string>();
-
-        if (service.alias) {
-            aliases.add(service.alias);
-        }
-
-        // Strip any port (:443), tag (:1.2.3), or digest (@sha256:...) suffix from each path segment
-        const serviceNameWithoutVersionAndPort = service.name.replaceAll(/[:@][^/]*/g, "");
-        aliases.add(serviceNameWithoutVersionAndPort.replaceAll("/", "-"));
-        aliases.add(serviceNameWithoutVersionAndPort.replaceAll("/", "__"));
-
-        return aliases;
-    }
-
-    static getServiceAlias (service: Service): string {
-        const aliases = Utils.getAllServiceAliases(service);
-
-        // Return the first alias in the set
-        return aliases.values().next().value!;
     }
 }
