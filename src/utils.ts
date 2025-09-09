@@ -402,12 +402,12 @@ export class Utils {
         return Object.getPrototypeOf(v) === Object.prototype;
     }
 
-    static async remoteFileExist (cwd: string, file: string, ref: string, domain: string, projectPath: string, protocol: GitSchema, port: string) {
+    static async remoteFileExist (cwd: string, file: string, ref: string, domain: string, projectPath: string, protocol: GitSchema, port: string, gituser: string) {
         switch (protocol) {
             case "ssh":
             case "git":
                 try {
-                    await Utils.spawn(`git archive --remote=ssh://git@${domain}:${port}/${projectPath}.git ${ref} ${file}`.split(" "), cwd);
+                    await Utils.spawn(`git archive --remote=ssh://${gituser}@${domain}:${port}/${projectPath}.git ${ref} ${file}`.split(" "), cwd);
                     return true;
                 } catch (e: any) {
                     if (!e.stderr.includes(`remote: fatal: pathspec '${file}' did not match any files`)) throw new Error(e);

@@ -6,6 +6,7 @@ import {isSshDirFound} from "./utils.js";
 
 describe("remoteFileExist", () => {
     describe("protocol: git", () => {
+        const gituser = "git";
         const ref = "0.3.1";
         const domain = "gitlab.com";
         const projectPath = "components/go";
