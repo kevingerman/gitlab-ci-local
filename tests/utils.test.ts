@@ -48,6 +48,21 @@ remote: git upload-archive: archiver died with error`,
             const fileExist = await Utils.remoteFileExist(cwd, file, ref, domain, projectPath, "git", port);
             expect(fileExist).toBe(false);
         });
+
+        test("uses gituser in SSH URL and handles permission denied", async () => {
+            const file = "templates/secret.yml";
+            if (!isSshDirFound()) {
+                const spyGitArchive = {
+                    cmdArgs: `git archive --remote=ssh://${gituser}@${domain}:${port}/${projectPath}.git ${ref} ${file}`.split(" "),
+                    rejection: {
+                        stderr: `Permission denied (publickey).`,
+                    },
+                };
+                initSpawnSpyReject([spyGitArchive]);
+            }
+            const fileExist = await Utils.remoteFileExist(cwd, file, ref, domain, projectPath, "git", port, gituser);
+            expect(fileExist).toBe(false);
+        });
     });
 });
 
