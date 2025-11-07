@@ -25,7 +25,7 @@ describe("remoteFileExist", () => {
                 initSpawnSpy([spyGitArchive]);
             }
 
-            const fileExist = await Utils.remoteFileExist(cwd, file, ref, domain, projectPath, "git", port);
+            const fileExist = await Utils.remoteFileExist(cwd, file, ref, domain, projectPath, "git", port, "git");
             expect(fileExist).toBe(true);
         });
 
@@ -45,7 +45,7 @@ remote: git upload-archive: archiver died with error`,
                 initSpawnSpyReject([spyGitArchive]);
             }
 
-            const fileExist = await Utils.remoteFileExist(cwd, file, ref, domain, projectPath, "git", port);
+            const fileExist = await Utils.remoteFileExist(cwd, file, ref, domain, projectPath, "git", port, "git");
             expect(fileExist).toBe(false);
         });
 

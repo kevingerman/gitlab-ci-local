@@ -104,8 +104,8 @@ export class GitData {
                         } else if ( ndx === 0 ) {
                             let remoteKey = curValue;
                         }
-                        return remoteKey;
                     }
+                    return remoteKey;
                 };
 
                 let remoteKey = remotes.stdout.split(" ").reduce(pickremote );
@@ -113,7 +113,7 @@ export class GitData {
                 // NOTE: For power user that wishes to customize the remote url
                 const res = await Utils.spawn(["git", "remote", "get-url", remoteKey], cwd);
                 gitRemote = res.stdout;
-            } catch {
+            } catch(e) {
                 console.error(e);
             }
 
