@@ -8,13 +8,12 @@ import base64url from "base64url";
 import execa from "execa";
 import assert from "assert";
 import {CICDVariable} from "./variables-from-files.js";
-import {GitData, GitSchema} from "./git-data.js";
-import globby from "globby";
+import {GitData} from "./git-data.js";
+import {globbySync} from "globby";
 import micromatch from "micromatch";
-import axios, {AxiosRequestConfig} from "axios";
+import {AxiosRequestConfig} from "axios";
 import path from "path";
 import {Argv} from "./argv.js";
-import {MIMEType} from "node:util";
 
 type RuleResultOpt = {
     argv: Argv;
@@ -330,7 +329,7 @@ export class Utils {
             if (pattern == "") {
                 continue;
             }
-            if (globby.sync(pattern, {dot: true, cwd}).length > 0) {
+            if (globbySync(pattern, {dot: true, cwd}).length > 0) {
                 return true;
             }
         }
@@ -401,41 +400,6 @@ export class Utils {
 
     static isObject (v: any) {
         return Object.getPrototypeOf(v) === Object.prototype;
-    }
-
-    static async remoteFileExist (cwd: string, file: string, ref: string, domain: string, projectPath: string, protocol: GitSchema, port: string, gituser: string) {
-        switch (protocol) {
-            case "ssh":
-            case "git":
-                try {
-                    await Utils.spawn(`git archive --remote=ssh://${gituser}@${domain}:${port}/${projectPath}.git ${ref} ${file}`.split(" "), cwd);
-                    return true;
-                } catch (e: any) {
-                    if (!e.stderr.includes(`remote: fatal: pathspec '${file}' did not match any files`)) throw new Error(e);
-                    return false;
-                }
-
-            case "http":
-            case "https": {
-                try {
-                    const axiosConfig: AxiosRequestConfig = Utils.getAxiosProxyConfig();
-                    const {status, headers} = await axios.get(
-                        `${protocol}://${domain}:${port}/${projectPath}/-/raw/${ref}/${file}`,
-                        axiosConfig,
-                    );
-                    const mimeType = new MIMEType(headers["content-type"]);
-                    return (
-                        status === 200 &&
-                        (mimeType.type === "text" && mimeType.subtype === "plain") // handles scenario where self-hosted gitlab returns statuscode 200 when file does not exist
-                    );
-                } catch {
-                    return false;
-                }
-            }
-            default: {
-                Utils.switchStatementExhaustiveCheck(protocol);
-            }
-        }
     }
 
     static switchStatementExhaustiveCheck (param: never): never {
